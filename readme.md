@@ -2,7 +2,7 @@
 
 > **"The Black Box for Linux Infrastructure."**
 
-![Status](https://img.shields.io/badge/Status-Alpha-red) ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20eBPF-blue) ![Architecture](https://img.shields.io/badge/Architecture-Event--Driven%20Columnar-green)
+![Status](https://img.shields.io/badge/Status-Alpha-red) ![Language](https://img.shields.io/badge/Language-C%2B%2B20%20%7C%20eBPF-blue)
 
 **EventHorizon** is a high-performance, **Level 3 (L3)** observability agent designed to permanently decouple system telemetry from the host machine.
 
