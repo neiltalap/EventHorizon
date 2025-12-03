@@ -22,42 +22,15 @@ Industry standard observability is "lossy." EventHorizon is **lossless**.
 | **L2** | **Logs/Tracing** | `nginx: 500 Error` | What system calls failed? Was it a permission error? |
 | **L3** | **EventHorizon** | `PID 400 (nginx) calling openat() on /etc/ssl/certs failed (EACCES) at 12:00:01.004` | **Nothing.** |
 
----
 
-## 🏗 Architecture
-
-EventHorizon is strictly a **host-based agent**. It does **not** include a database.
-
-It acts as a streaming engine that captures kernel events, compresses them into Parquet format, and offloads them immediately to your commodity object storage (S3, MinIO, GCS). You bring the storage and the query engine (DuckDB, ClickHouse, Athena).
-
-```mermaid
-graph LR
-    subgraph Kernel ["Kernel Space"]
-        A[eBPF Probes] -->|Raw Structs| B[Ring Buffer]
-    end
-    subgraph User ["User Space (C++ Agent)"]
-        B --> C[Ingestor Thread]
-        C --> D{Columnar Compressor}
-        D -->|Delta-of-Delta| E[Timestamp Stream]
-        D -->|Global Dictionary| F[String Stream]
-        D -->|RLE| G[PID Stream]
-        E & F & G --> H[In-Memory Parquet Chunk]
-        H -->|HTTP PUT| I[S3 / MinIO]
-    end
-    subgraph Laptop ["The Analyst's Laptop"]
-        I -->|DuckDB / ClickHouse| J[Forensic Querying]
-    end
-```
 
 ---
 
-## 🛡 Reliability: The "Immortal" Agent
+## 🛡 Resiliency Under Load
 
-Observability is useless if it fails when you need it most—during a system crash.
+EventHorizon is designed for reliability even under extreme system load. During periods of massive CPU or memory pressure, standard observability agents often fail or drop data due to process starvation and memory swapping. EventHorizon mitigates these risks using:
 
-When a Linux machine is under massive load (Load Average > CPU Count), standard agents are starved of CPU time, causing them to drop events. EventHorizon prevents this by running as a **Real-Time Process**, utilizing two key Linux primitives:
+1.  **SCHED_FIFO (Real-Time Priority):** The agent is configured as a `SCHED_FIFO` process with maximum priority (99). This ensures the Linux kernel prioritizes EventHorizon's access to CPU resources, guaranteeing timely processing of events even when other system processes are heavily contended.
+2.  **mlockall (Memory Locking):** EventHorizon locks its entire memory footprint into physical RAM. This prevents the operating system from swapping the agent's memory to disk, which would introduce critical latency and compromise data integrity during memory-intensive conditions.
 
-1.  **SCHED_FIFO (Priority 99):** The kernel scheduler is instructed to prioritize EventHorizon above all standard userspace processes (databases, web servers, etc.). If an event occurs, we process it immediately.
-2.  **mlockall (Memory Locking):** We lock the agent's entire address space into physical RAM. This prevents the OS from swapping the agent to disk during memory pressure conditions.
-
-This "Immortal" status ensures that even if the host is effectively bricked due to load, the telemetry stream remains uninterrupted.
+These mechanisms ensure EventHorizon continues to capture and stream critical telemetry without interruption, regardless of host machine stress.
