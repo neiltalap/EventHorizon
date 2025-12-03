@@ -22,7 +22,33 @@ Industry standard observability is "lossy." EventHorizon is **lossless**.
 | **L2** | **Logs/Tracing** | `nginx: 500 Error` | What system calls failed? Was it a permission error? |
 | **L3** | **EventHorizon** | `PID 400 (nginx) calling openat() on /etc/ssl/certs failed (EACCES) at 12:00:01.004` | **Nothing.** |
 
+---
 
+## 🧠 Philosophy: The "Load Average" Trap
+
+Why do we need L3 observability? Because standard Linux metrics are mathematically ambiguous.
+
+On Linux, **Load Average** is defined as:
+
+$ \text{Load} = \underbrace{\text{CPU Running} + \text{CPU Waiting}}_{\text{R-State}} + \underbrace{\text{Disk Waiting}}_{\text{D-State}} $
+
+This creates a dangerous blind spot during incidents. `top` conflates "working hard" with "hardly working."
+
+| Metric | The Tool (`top`) | The Reality | The Ambiguity |
+| :--- | :--- | :--- | :--- |
+| **Load Avg: 10** | "System is busy." | **Scenario A:** 10 threads crunching math (R-State). <br> **Scenario B:** 10 threads deadlocked waiting for NVMe (D-State). | You cannot tell the difference without digging. You guess. |
+| **CPU: 50%** | "We have capacity." | The CPU is idle only because it is blocked by a saturated disk. | **Utilization hides Saturation.** |
+
+### Why `top` belongs in the trash
+`top` is the homeopathy of system administration: it feels like you're doing something, but it cures nothing. It conflates "working" (R-State) with "stuck" (D-State), leading engineers to throw CPU power at Disk I/O bottlenecks. If you are still using `top` to debug production outages in 2025, you are not solving problems; you are just watching them happen. **Stop it.**
+
+**EventHorizon removes the guesswork.**
+It does not aggregate "Load." It records the atomic cause of the delay.
+
+> **EventHorizon Log:**
+> `PID 400 blocked for 520ms in state TASK_UNINTERRUPTIBLE (D-State) waiting on blk_mq_get_tag (Disk I/O).`
+
+We replace "Symptom Monitoring" with **Deterministic Causality.**
 
 ---
 
