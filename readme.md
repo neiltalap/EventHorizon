@@ -26,14 +26,16 @@ Industry standard observability is "lossy." EventHorizon is **lossless**.
 
 ## 🏗 Architecture
 
-EventHorizon is not a monitoring agent; it is a **streaming database engine** that lives on your host.
+EventHorizon is strictly a **host-based agent**. It does **not** include a database.
+
+It acts as a streaming engine that captures kernel events, compresses them into Parquet format, and offloads them immediately to your commodity object storage (S3, MinIO, GCS). You bring the storage and the query engine (DuckDB, ClickHouse, Athena).
 
 ```mermaid
 graph LR
-    subgraph Kernel Space
+    subgraph Kernel ["Kernel Space"]
         A[eBPF Probes] -->|Raw Structs| B[Ring Buffer]
     end
-    subgraph User Space (C++ Agent)
+    subgraph User ["User Space (C++ Agent)"]
         B --> C[Ingestor Thread]
         C --> D{Columnar Compressor}
         D -->|Delta-of-Delta| E[Timestamp Stream]
@@ -42,71 +44,20 @@ graph LR
         E & F & G --> H[In-Memory Parquet Chunk]
         H -->|HTTP PUT| I[S3 / MinIO]
     end
-    subgraph "The Analyst's Laptop"
+    subgraph Laptop ["The Analyst's Laptop"]
         I -->|DuckDB / ClickHouse| J[Forensic Querying]
     end
 ```
 
 ---
 
-## 🛡 Process Starvation: The "Immortal" Agent
+## 🛡 Reliability: The "Immortal" Agent
 
-When a Linux machine is under "massive load" (Load Average > CPU Count), the kernel scheduler (CFS) starts delaying processes to give everyone a "fair share."
+Observability is useless if it fails when you need it most—during a system crash.
 
-If your observability agent is treated 'fairly', you lose. You will miss events because the kernel won't give your C++ agent CPU time to empty the Ring Buffer.
+When a Linux machine is under massive load (Load Average > CPU Count), standard agents are starved of CPU time, causing them to drop events. EventHorizon prevents this by running as a **Real-Time Process**, utilizing two key Linux primitives:
 
-To fix this, we turn the agent into a **Real-Time Process**.
+1.  **SCHED_FIFO (Priority 99):** The kernel scheduler is instructed to prioritize EventHorizon above all standard userspace processes (databases, web servers, etc.). If an event occurs, we process it immediately.
+2.  **mlockall (Memory Locking):** We lock the agent's entire address space into physical RAM. This prevents the OS from swapping the agent to disk during memory pressure conditions.
 
-### 1. The Weapon: SCHED_FIFO
-Linux has a "Real-Time" scheduling class that takes precedence over everything else.
-* **Normal Processes:** Use `SCHED_OTHER`. They fight for CPU.
-* **EventHorizon:** Uses `SCHED_FIFO` with Priority 99 (Max).
-
-If a `SCHED_FIFO` process wants the CPU, the kernel immediately pauses whatever else is running (even if it's halfway through a calculation) and gives the core to you.
-
-### 2. The Shield: mlockall
-High load often means Memory Pressure. When RAM is full, Linux starts "Swapping" (moving idle program memory to disk).
-If Linux swaps the agent's code to disk, and then we try to process an event, we die.
-
-We use `mlockall` to force the kernel to keep every byte of the agent in physical RAM, forever.
-
-### 3. The Implementation (main.cpp)
-We add a `make_immortal()` function to the start of `main.cpp`:
-
-```cpp
-#include <sys/mman.h>   // For mlockall
-#include <sched.h>      // For sched_setscheduler
-#include <sys/resource.h>
-
-void make_immortal() {
-    // 1. THE SHIELD: Lock memory to prevent swapping
-    // MCL_CURRENT: Lock current memory
-    // MCL_FUTURE: Lock any memory we allocate in the future
-    if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
-        std::cerr << "[WARN] Failed to lock memory. Sudo required?" << std::endl;
-    } else {
-        std::cout << "[INFO] Memory locked. Swap immune." << std::endl;
-    }
-
-    // 2. THE WEAPON: Set Real-Time Scheduler
-    struct sched_param param;
-    param.sched_priority = 99; // Maximum priority (1-99)
-
-    // SCHED_FIFO: We run until we block (sleep) or yield. 
-    // No other standard process can interrupt us.
-    if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-        std::cerr << "[WARN] Failed to set Real-Time priority." << std::endl;
-    } else {
-        std::cout << "[INFO] Running as Real-Time Process (Priority 99)." << std::endl;
-    }
-}
-
-int main() {
-    make_immortal(); // <--- Call this first
-    
-    // ... load eBPF and start loop ...
-}
-```
-
-### The "Nuclear Option": CPU Isolation
-If `SCHED_FIFO` isn't enough (e.g., high-frequency trading), we use CPU Pinning (`isolcpus=3`) to remove a CPU core from the scheduler entirely, dedicating it solely to EventHorizon.
+This "Immortal" status ensures that even if the host is effectively bricked due to load, the telemetry stream remains uninterrupted.
